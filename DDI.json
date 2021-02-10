@@ -1,0 +1,297 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description" : "DDI on AWS",
+    "Parameters" : {
+      "KeyName" : {
+        "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+        "Type" : "AWS::EC2::KeyPair::KeyName",
+        "ConstraintDescription" : "Must be the name of an existing EC2 KeyPair."
+      }, 
+      "UserIP" : {
+        "Description" : "The IP address range that can be used to SSH/RDP to the EC2 instances",
+        "Type": "String",
+        "MinLength": "9",
+        "MaxLength": "18",
+        "Default": "0.0.0.0/0",
+        "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+        "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+      }
+   },
+   "Resources" : {
+      "LinuxSecurityGroup" : {
+         "Type" : "AWS::EC2::SecurityGroup",
+         "Properties" : {
+           "GroupDescription" : "Enable SSH access",
+           "VpcId": {"Ref": "ddivpc"},
+           "Tags" : [ {"Key" : "Name", "Value" : "LinuxSG"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ],
+           "SecurityGroupIngress" : 
+             [ { "Description" : "LinuxSG", "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : { "Ref" : "UserIP"} }]
+         }
+       },
+      "WindowsSecurityGroup" : {
+         "Type" : "AWS::EC2::SecurityGroup",
+         "Properties" : {
+           "GroupDescription" : "Enable RDP access",
+           "VpcId": {"Ref": "ddivpc"},
+           "Tags" : [ {"Key" : "Name", "Value" : "WindowsSG"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ],
+           "SecurityGroupIngress" : 
+             [ { "Description" : "WindowsSG", "IpProtocol" : "tcp", "FromPort" : "3389", "ToPort" : "3389", "CidrIp" : { "Ref" : "UserIP"}},
+               { "Description" : "WindowsSG", "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "SourceSecurityGroupId" : { "Ref" : "LinuxSecurityGroup"}} ]
+         }
+       },
+      "DDSecurityGroup" : {
+         "Type" : "AWS::EC2::SecurityGroup",
+         "Properties" : {
+           "GroupDescription" : "Enable http/https/ssh access",
+           "VpcId": {"Ref": "ddivpc"},
+           "Tags" : [ {"Key" : "Name", "Value" : "DDSG"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ],
+           "SecurityGroupIngress" : 
+             [ { "Description" : "DDSG", "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : { "Ref" : "UserIP"}},
+               { "Description" : "DDSG", "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : { "Ref" : "UserIP"}},
+               { "Description" : "DDSG", "IpProtocol" : "-1", "FromPort" : "-1", "ToPort" : "-1", "SourceSecurityGroupId" : { "Ref" : "WindowsSecurityGroup"}},
+               { "Description" : "DDSG", "IpProtocol" : "-1", "FromPort" : "-1", "ToPort" : "-1", "SourceSecurityGroupId" : { "Ref" : "LinuxSecurityGroup"}}]
+         }
+       },
+       "DataPort" : {
+         "Type" : "AWS::EC2::NetworkInterface",
+         "Properties" : {
+           "SubnetId" : { "Ref" : "pvtsubnet" },
+           "Description" :"Interface for DDI Mirror traffic",
+           "GroupSet" : [ {"Ref" : "DDSecurityGroup"} ],
+           "SourceDestCheck" : "true",
+           "Tags" : [ {"Key" : "Name", "Value" : "DataPort"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+       },
+       "MgmtPort" : {
+         "Type" : "AWS::EC2::NetworkInterface",
+         "Properties" : {
+           "SubnetId" : { "Ref" : "pvtsubnet" },
+           "Description" :"Interface for DDI Mgmt traffic",
+           "GroupSet" : [ {"Ref" : "DDSecurityGroup"} ],
+           "SourceDestCheck" : "true",
+           "Tags" : [ {"Key" : "Name", "Value" : "MgmtPort"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+       },
+       "LinuxPort" : {
+         "Type" : "AWS::EC2::NetworkInterface",
+         "Properties" : {
+           "SubnetId" : { "Ref" : "pubsubnet" },
+           "Description" :"Interface for Linux traffic",
+           "GroupSet" : [ {"Ref" : "LinuxSecurityGroup"} ],
+           "SourceDestCheck" : "true",
+           "Tags" : [ {"Key" : "Name", "Value" : "LinuxPort"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+       },
+       "NetworkInterfaceTarget": {
+         "Type": "AWS::EC2::TrafficMirrorTarget",
+         "DependsOn" : "DDInstance",
+         "Properties": {
+            "Description": "Traffic mirror target associated with a network interface",
+            "NetworkInterfaceId": { "Ref" : "DataPort" },
+            "Tags": [{"Key": "Name","Value": "NetworkInterfaceTarget"}]
+         }
+       },
+      "TrafficMirrorSession": {
+         "Type": "AWS::EC2::TrafficMirrorSession",
+         "DependsOn" : "NetworkInterfaceTarget",
+         "Properties": {
+           "Description": "DDI traffic mirror session",
+           "NetworkInterfaceId": { "Ref" : "LinuxPort" },
+           "TrafficMirrorTargetId": { "Ref" : "NetworkInterfaceTarget" },
+           "TrafficMirrorFilterId": { "Ref" : "DDITrafficMirrorFilter" },
+           "SessionNumber": 1,
+           "Tags": [{"Key": "Name","Value": "DDINetworkInterfaceTarget"}]
+         }
+       }, 
+      "LinuxInstance" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "pubsubnetassociation",
+         "Properties" : {
+            "InstanceType" : "t3.medium",
+            "Monitoring" : "true",
+            "NetworkInterfaces": [{"NetworkInterfaceId" : {"Ref" : "LinuxPort"},"DeviceIndex": 0}],
+            "KeyName" : { "Ref" : "KeyName" },
+            "ImageId" : "ami-047a51fa27710816e",
+            "Tags" : [ {"Key" : "Name", "Value" : "LinuxInstance"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+      },
+      "DDInstance" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "pvtsubnet",
+         "Properties" : {
+            "InstanceType" : "m5.2xlarge",
+            "Monitoring" : "true",
+            "NetworkInterfaces": [{"NetworkInterfaceId" : {"Ref" : "DataPort"},"DeviceIndex": 0 },
+            {"NetworkInterfaceId" : {"Ref" : "MgmtPort"},"DeviceIndex": 1 }],     
+            "KeyName" : { "Ref" : "KeyName" },
+            "ImageId" : "ami-0d0d38844e6e4cbf2",
+            "Tags" : [ {"Key" : "Name", "Value" : "DDInstance"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+      },
+      "WindowsInstance" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "pubsubnetassociation",
+         "Properties" : {
+            "InstanceType" : "t3.large",
+            "Monitoring" : "true",
+            "KeyName" : { "Ref" : "KeyName" },
+            "NetworkInterfaces": [{
+               "AssociatePublicIpAddress": true,
+               "DeleteOnTermination": true,
+               "DeviceIndex": 0,
+               "SubnetId": {"Ref": "pubsubnet"},
+               "GroupSet": [{"Ref": "WindowsSecurityGroup"}] }],
+            "ImageId" : "ami-0f5761c546ea1265a",
+            "Tags" : [ {"Key" : "Name", "Value" : "WindowsInstance"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+         }
+      },
+         "ddivpc" : {
+            "Type" : "AWS::EC2::VPC",
+            "Properties" : {
+               "CidrBlock" : "10.0.0.0/16",
+               "EnableDnsSupport" : "true",
+               "EnableDnsHostnames" : "true",
+               "InstanceTenancy" : "default",
+               "Tags" : [ {"Key" : "Name", "Value" : "ddivpc"}, {"Key" : "Role", "Value" : "Security"}, {"Key" : "Environment", "Value" : "Prod"}, {"Key" : "Owner", "Value" : "Trend Micro"} ]
+            }
+         },
+         "ddigw" : {
+            "Type" : "AWS::EC2::InternetGateway",
+            "Properties" : {
+               "Tags" : [ {"Key" : "Name", "Value" : "ddigw"} ]
+            }
+         },
+         "ddigwattach" : {
+            "Type" : "AWS::EC2::VPCGatewayAttachment",
+            "DependsOn" : "ddigw",
+            "Properties" : {
+              "VpcId" : { "Ref" : "ddivpc" },
+              "InternetGatewayId" : { "Ref" : "ddigw" }
+            }
+         },
+         "pubsubnet" : {
+            "Type" : "AWS::EC2::Subnet",
+            "DependsOn" : "ddivpc",
+            "Properties" : {
+               "VpcId" : { "Ref" : "ddivpc" },
+               "CidrBlock" : "10.0.0.0/24",
+               "MapPublicIpOnLaunch" : "true",
+               "AvailabilityZone" : "us-east-1a",
+               "Tags" : [ { "Key" : "Name", "Value" : "pubsubnet" } ]
+            }
+         },
+         "pvtsubnet" : {
+            "Type" : "AWS::EC2::Subnet",
+            "DependsOn" : "ddivpc",
+            "Properties" : {
+               "VpcId" : { "Ref" : "ddivpc" },
+               "CidrBlock" : "10.0.1.0/24",
+               "AvailabilityZone" : "us-east-1a",
+               "Tags" : [ { "Key" : "Name", "Value" : "pvtsubnet" } ]
+            }
+         },
+         "ddinatgweip" : {
+            "DependsOn" : "pubsubnet",
+            "Type" : "AWS::EC2::EIP",
+            "Properties" : {
+               "Domain" : "vpc",
+               "Tags" : [ {"Key" : "Name", "Value" : "ddinatgweip" } ]
+            }
+         },
+         "ddinatgw" : {
+            "Type" : "AWS::EC2::NatGateway",
+            "DependsOn" : "ddinatgweip",
+            "Properties" : {
+               "AllocationId" : { "Fn::GetAtt" : ["ddinatgweip", "AllocationId"]},
+               "SubnetId" : { "Ref" : "pubsubnet"},
+               "Tags" : [ {"Key" : "Name", "Value" : "ddinatgw" } ]
+            }
+         },
+         "pubrtb" : {
+            "Type" : "AWS::EC2::RouteTable",
+            "Properties" : {
+               "VpcId" : { "Ref" : "ddivpc" },
+               "Tags" : [ { "Key" : "Name", "Value" : "pubrtb" } ]
+            }
+         },
+         "pubroutes": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn" : "pubrtb",
+            "Properties": {
+              "RouteTableId" : { "Ref" : "pubrtb" },
+              "DestinationCidrBlock" : "0.0.0.0/0",
+              "GatewayId" : { "Ref" : "ddigw" }
+              }
+            },
+         "pubsubnetassociation" : {
+            "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+            "DependsOn" : "pubroutes",
+            "Properties" : {
+                  "SubnetId" : { "Ref" : "pubsubnet" },
+                  "RouteTableId" : { "Ref" : "pubrtb" }
+               }
+            },            
+         "pvtrtb" : {
+            "Type" : "AWS::EC2::RouteTable",
+            "DependsOn" : "ddinatgw",
+            "Properties" : {
+               "VpcId" : { "Ref" : "ddivpc" },
+               "Tags" : [ { "Key" : "Name", "Value" : "pvtrtb" } ]
+               }
+            },
+         "pvtroutes" : {
+            "Type" : "AWS::EC2::Route",
+            "DependsOn" : "pvtrtb",
+            "Properties" : {
+               "RouteTableId" : { "Ref" : "pvtrtb" },
+               "DestinationCidrBlock" : "0.0.0.0/0",
+               "NatGatewayId" : { "Ref" : "ddinatgw" }
+            }
+         },
+         "pvtsubnetassociation" : {
+            "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+            "DependsOn" : "pvtroutes",
+            "Properties" : {
+               "SubnetId" : { "Ref" : "pvtsubnet" },
+               "RouteTableId" : { "Ref" : "pvtrtb" }
+            }
+         },
+         "DDITrafficMirrorFilter": {
+            "Type": "AWS::EC2::TrafficMirrorFilter",
+            "Properties": {
+                "Description": "DDI Traffic Mirror Filter", 
+                "Tags": [ { "Key": "Name", "Value": "DDITrafficMirrorFilter" }]
+               }
+            },
+         "DDITrafficMirrorIngress": {
+            "Type" : "AWS::EC2::TrafficMirrorFilterRule",
+            "Properties" : {
+                  "Description" : "Ingress",
+                  "DestinationCidrBlock" : "0.0.0.0/0",
+                  "RuleAction" : "accept",
+                  "RuleNumber" : "100",
+                  "SourceCidrBlock" : "0.0.0.0/0",
+                  "TrafficDirection" : "ingress",
+                  "TrafficMirrorFilterId" : { "Ref" : "DDITrafficMirrorFilter" }
+              }
+          },
+         "DDITrafficMirrorEgress": {
+            "Type" : "AWS::EC2::TrafficMirrorFilterRule",
+            "Properties" : {
+               "Description" : "Egress",
+               "DestinationCidrBlock" : "0.0.0.0/0",
+               "RuleAction" : "accept",
+               "RuleNumber" : "100",
+               "SourceCidrBlock" : "0.0.0.0/0",
+               "TrafficDirection" : "egress",
+               "TrafficMirrorFilterId" : { "Ref" : "DDITrafficMirrorFilter" }
+           }
+       }
+    },
+"Outputs" : {
+   "KeyName" : {
+      "Description" : "Key used to created the EC2 instances",
+      "Value" : { "Ref" : "KeyName" }
+        }
+    }
+ }
