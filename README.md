@@ -23,7 +23,7 @@ This is how the general architecture looks like:
 <img src="topology.png">
 
 
-```This template only works on us-east-1, if you want to use it in another region, you will have to modify the AMI IDs and deploy using the regions choose``
+```This template only works on us-east-1, if you want to use it in another region, you will have to modify the AMI IDs and deploy using the regions choose```
 
 ## How-To:
 
